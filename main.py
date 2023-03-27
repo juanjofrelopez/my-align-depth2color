@@ -13,6 +13,7 @@ import numpy as np
 import cv2
 
 import time
+import math
 
 # Create a pipeline
 pipeline = rs.pipeline()
@@ -43,12 +44,12 @@ if device_product_line == 'L500':
 else:
     config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 60)
 
+# Declare filters
 smooth_alpha = 0.1 
 smooth_delta = 40
 persistency_index = 8
 temporal = rs.temporal_filter(smooth_alpha,smooth_delta,persistency_index)
 hole_filling = rs.hole_filling_filter()
-
 
 # Start streaming
 profile = pipeline.start(config)
@@ -94,7 +95,8 @@ try:
         # Validate that both frames are valid
         if not aligned_depth_frame or not color_frame:
             continue
-
+        
+        # measuring fps
         end = time.time()
         time_passed = (end-start)
         fps_real = 1/time_passed
@@ -105,8 +107,11 @@ try:
 
         width = aligned_depth_frame.get_width()
         height = aligned_depth_frame.get_height()
-        dist_center = aligned_depth_frame.get_distance(int(width/2),int(height/2))
-        print('distance to center: ',"{:.2f}".format(dist_center),'m','  FPS:',int(fps_real),end='\r')
+        x_camera_center = int(width/2)
+        y_camera_center = int(height/2)
+        camera_center = [x_camera_center,y_camera_center]
+        # dist_center = aligned_depth_frame.get_distance(center_x,center_y)
+        # print('distance to center: ',"{:.2f}".format(dist_center),'m','  FPS:',int(fps_real),end='\r')
 
         # Remove background v0.3: with temporal and hole filling filters
         bg_removed = (depth_image < clipping_distance) * depth_image
@@ -122,13 +127,15 @@ try:
         dilate = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
         
         denoise = cv2.medianBlur(dilate,71)
-        cv2.imshow('denoise',denoise)
         
         # find the contours
         contours, hierarchy = cv2.findContours(denoise,cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
         # draw the contours
         cv2.drawContours(color_image,contours,-1,(0,255,0),2)
+
+        # initialize intrinsic
+        depth_intrin = aligned_depth_frame.profile.as_video_stream_profile().intrinsics
 
         # loop over all contour coordinates
         for i,c in enumerate(contours):
@@ -141,21 +148,34 @@ try:
             box = np.array(box,dtype='int')
             (tl,tr,br,bl) = box # in the [x,y] coordinates form
             #print(tl,tr,bl,br,' ',end='\r')
-            #cv2.circle(depth_colormap,tl,9,(255,0,0),4)
-            #cv2.circle(depth_colormap,tr,9,(0,255,0),4)
-            #cv2.circle(depth_colormap,bl,9,(0,0,255),4)
-            #cv2.circle(depth_colormap,br,9,(255,255,255),4)
             cv2.drawContours(color_image,[box],-1,(255,0,0),2)
 
+            # Find center of poligon
             x1 = tl[0]
             x2 = tr[0]
-            x_center = int((x1+x2)/2)
+            x_poly_center = int((x1+x2)/2)
             y1 = tl[1]
             y2 = bl[1]
-            y_center = int((y1+y2)/2)
-            cv2.circle(color_image,(x_center,y_center),9,(255,255,255),4)
+            y_poly_center = int((y1+y2)/2)
             
-
+            poly_center = [x_poly_center,y_poly_center]
+            
+            depth_poly_center = aligned_depth_frame.get_distance(x_poly_center,y_poly_center)
+            depth_camera_center = aligned_depth_frame.get_distance(x_camera_center,y_camera_center)
+            
+            depth_poly_m = rs.rs2_deproject_pixel_to_point(depth_intrin, poly_center, depth_poly_center)
+            depth_camera_m = rs.rs2_deproject_pixel_to_point(depth_intrin, camera_center, depth_camera_center)
+            
+            distance_3d = math.sqrt(pow(depth_poly_m[0] - depth_camera_m[0], 2) + pow(depth_poly_m[1] - depth_camera_m[1], 2) + pow(depth_poly_m[2] - depth_camera_m[2], 2))
+            distance_2d = math.sqrt(pow(depth_poly_m[0] - depth_camera_m[0], 2) + pow(depth_poly_m[1] - depth_camera_m[1], 2))
+            #print("{:.2f}".format(distance_3d*100),'cm ',"{:.2f}".format(distance_2d*100),'cm ',end='\r')
+            dist_diff_x = depth_poly_m[0] - depth_camera_m[0]
+            dist_diff_y = depth_poly_m[1] - depth_camera_m[1]
+            print('2D:',"{:.2f}".format(distance_2d*100),'cm ','x:',"{:.2f}".format(dist_diff_x*100),'cm ','y:',"{:.2f}".format(dist_diff_y*100),'cm ',end='\r')
+            
+            
+            cv2.circle(color_image,poly_center,9,(255,255,255),4)
+            
             # for (x,y) in box:
             #     (tl,tr,bl,br) = box
 
